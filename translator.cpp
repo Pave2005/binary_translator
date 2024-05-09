@@ -14,6 +14,17 @@ extern "C" int float_scanf(float* value)
         return scanf("%f", value);
 }
 
+
+int AssemblyCodeAlignedInit (assembly_code* const self, const size_t alignment, const size_t bytes)
+{
+        self->code = (char*)aligned_alloc (alignment, bytes);
+
+        self->size = bytes;
+        self->position = 0;
+
+        return 0;
+}
+
 int AsseblyCodeInit (assembly_code* const self, const size_t bytes)
 {
         self->code = (char*)calloc (bytes, sizeof(char));
@@ -308,7 +319,7 @@ inline void TranslatePopREGToAsm (assembly_code* const dst_code, const int reg_i
 }
 
 inline void TranslatePopREG (assembly_code* const dst_code, const int reg_id)  // проверить все и протестировать
-{
+{  // как pop
         constexpr u_int64_t suffix = 0x44; // 0x44 = 01000100b watch explanation of opcodes higher
         constexpr u_int64_t offset = 3;
 
@@ -343,7 +354,7 @@ inline void TranslatePopToAsm (assembly_code* const dst_code)
 }
 
 inline void TranslatePop (assembly_code* const dst_code)
-{
+{    // не верно так как у меня поп это изначально в регистр
         constexpr opcode rsp_sub_code =
         {
                 .code = ADD_RSP_IMM | (XMMWORD << BYTE(3)),  // проверить xmm
@@ -700,27 +711,401 @@ inline void TranslateOut (assembly_code* const dst_code)
         POP_ALL_REGS;
 }
 
+#define CHECK_JMP (current_code & 0xFF)
+#define GEN_JMP(jmp_type, cmp_type)                                                    \
+        vcmppd.code = VCMPPD_XMM5_XMM0_XMM5 | jmp_type << BYTE(4);                     \
+        vcmppd.size = OPSIZE(VCMPPD_XMM5_XMM0_XMM5);                                   \
+        WriteCommand (dst_code, vcmppd);                                               \
+        WriteCommand (dst_code, movmsk);                                               \
+        constexpr opcode cmp                                                           \
+        {                                                                              \
+                .code = cmp_type,                                                      \
+                .size = OPSIZE(cmp_type)                                               \
+        };                                                                             \
+        WriteCommand (dst_code, cmp);                                                  \
+        jmp.code = JE_REL32;                                                           \
+        jmp.size = OPSIZE(JE_REL32);
 
-
-
-
-
-
-
-void MakeLabelTable (assembly_code* const src_code, label_table*  const table) // не доделано
+void TranslateRel32Label (assembly_code* const dst_code, const size_t jmp_pos)
 {
-        size_t op_count = src_code->size / sizeof(int);
-        int* code = (int*)src_code->code;
-        for (size_t iter_count = 0; iter_count < op_count; ++iter_count)
+        char* temp_code = dst_code->code;
+        size_t to_sub   = dst_code->position - jmp_pos;
+        dst_code->code -= to_sub;                               // получили адрес прыжка
+
+        const u_int64_t current_code = *(uint_fast64_t*)dst_code->code;
+        cvt_u_int64_t_int convert    = {};
+        opcode write_rel32           = {};
+
+        if (JMP_REL32 == CHECK_JMP || CALL_OP_CODE == CHECK_JMP)
         {
-            switch (code[iter_count])
-            {
+                convert.rel_addr = to_sub - OPSIZE(JMP_REL32);
+
+                write_rel32.code = current_code | convert.extended_address << BYTE(1); // пишем jmp со сдивигом условно
+                write_rel32.size = sizeof (u_int64_t);
+        }
+        else
+        {
+                convert.rel_addr = to_sub - OPSIZE(JE_REL32);
+
+                write_rel32.code = current_code | convert.extended_address << BYTE(2);
+                write_rel32.size = sizeof(u_int64_t);
+        }
+
+        WriteCommand (dst_code, write_rel32);
+
+        dst_code->code     = temp_code;
+        dst_code->position = jmp_pos + to_sub; // вернули начальные данные
+}
+
+opcode TranslateJmpCall (assembly_code* const dst_code, const int jmp_call_code)
+{
+        constexpr opcode movmsk =
+        {
+                .code = MOVMSKPD_R14D_XMM5,
+                .size = OPSIZE(MOVMSKPD_R14D_XMM5)
+        };
+
+        opcode vcmppd = {};
+        opcode jmp    = {};
+
+        switch (jmp_call_code)
+        {
+        case JB:
+        {
+                GEN_JMP(LESS, CMP_R14D_1);
+                break;
+        }
+        case JA:
+        {
+                GEN_JMP(GREATER, CMP_R14D_1);
+                break;
+        }
+        case JE:
+        {
+                GEN_JMP(EQUAL, CMP_R14D_3);
+                break;
+        }
+        case CALL:
+        {
+                TranslatePush (dst_code, (u_int64_t)dst_code->code + TRANSLATE_PUSH_SIZE);
+        }
+        case JMP:
+        {
+                jmp.code = JMP_REL32;
+                jmp.size = OPSIZE(JMP_REL32);
+                break;
+        }
+        }
+
+        return jmp;
+}
+
+inline void TranslateTwoPopForCmp (assembly_code* const dst_code, const int jmp_call_code)
+{
+        if (jmp_call_code != JMP)
+        {
+                constexpr opcode get_first_elem =
+                {
+                        .code =  VMOVQ_XMM_RSP_IMM | XMM0_EXTEND << BYTE(3) | XMMWORD << BYTE(5),
+                        .size = OPSIZE(VMOVQ_XMM_RSP_IMM)
+                };
+
+                constexpr opcode get_second_elem =
+                {
+                        .code =  VMOVQ_XMM_RSP_IMM | XMM5_EXTEND << BYTE(3) | 2 * XMMWORD << BYTE(5),
+                        .size = OPSIZE(VMOVQ_XMM_RSP_IMM)
+                };
+
+                constexpr opcode add_rsp =
+                {
+                        .code = ADD_RSP_IMM | 2 * XMMWORD << BYTE(3),
+                        .size = OPSIZE(ADD_RSP_IMM)
+                };
+
+                WriteCommand (dst_code, get_first_elem);
+                WriteCommand (dst_code, get_second_elem);
+                WriteCommand (dst_code, add_rsp);
+        }
+}
+
+inline void TranslateAheadJmpCall (assembly_code* const dst_code,   // зависит от таблицы меток
+                                   abel_table*    const table,
+                                   const int            label_pos,
+                                   const int            jmp_call_pos,
+                                   const int            jmp_call_code)
+{ // доделать часть с таблицей
+        TranslateTwoPopForCmp (dst_code, jmp_call_code);
+
+        opcode jmp = TranslateJmpCall (dst_code, jmp_call_code);
+
+        size_t* code_pos_ptr = get_code_pos_ptr_by_jmp(table, label_pos, jmp_call_pos);
+        // дописать либу с таблицей меток
+        *code_pos_ptr        = dst_code->position;
+
+        WriteCommand (dst_code, jmp);
+
+}
+
+inline void JmpCallHandler (assembly_code* const __restrict dst_code,         // нужно таблицу написать
+                            label_table*   const __restrict table,
+                            const int                       label_pos,
+                            const int                       jmp_n_call_pos,
+                            const int                       jmp_n_call_code)
+{  // не смотрел
+        // For case when label is before jump
+        if (label_pos <= jmp_call_pos) {
+                translate_cycle(dst_code,
+                                table,
+                                label_pos,
+                                jmp_n_call_pos,
+                                jmp_n_call_code);
+        }
+        else
+        {
+                translate_ahead_jmp_n_call(dst_code,
+                                           table,
+                                           label_pos,
+                                           jmp_n_call_pos,
+                                           jmp_n_call_code);
+        }
+                        // For case label after jump
+
+
+}
+
+inline void TranslateCycle (assembly_code* const dst_code,      // нужно таблицу написать
+                            label_table*   const table,
+                            const int            label_pos,
+                            const int            jmp_call_pos,
+                            const int            jmp_call_code)
+
+{ // не смотрел
+        TranslateTwoPopForCmp (dst_code, jmp_call_code);
+
+        size_t code_pos = get_code_pos_by_jmp (table,
+                                               label_pos,
+                                               jmp_n_call_pos);
+
+        cvt_u_int64_t_int convert = {};
+
+        opcode jmp = translate_jmp_n_call(dst_code, jmp_n_call_code);
+
+        // Call is treated as a jump with saving the return address in the stack
+        switch(jmp_n_call_code) {
+        case CALL:
+                translate_push(dst_code,
+                               (u_int64_t)dst_code->code + TRANSLATE_PUSH_SIZE);
+                __attribute__((fallthrough));
+
+        case JMP:
+                // Save rel address
+                convert = { .rel_addr =
+                            code_pos - dst_code->position - OPSIZE(JMP_REL32)};
+                jmp.code |= convert.extended_address << BYTE(1);
+                break;
+       default:
+                convert = { .rel_addr = code_pos - dst_code->position - OPSIZE(JE_REL32)};
+                jmp.code |= convert.extended_address << BYTE(2);
+        }
+
+        write_command(dst_code, jmp);
+}
+
+inline void SetDataSegment (assembly_code* const dst_code)
+{
+        // положили в первые ячейки сегмент памяти
+
+        const u_int64_t data_address = (u_int64_t)(dst_code->code - 2 * PAGESIZE);
+
+        constexpr opcode mov_r13_imm =
+        {
+                .code = MOV_R13,
+                .size = OPSIZE(MOV_R13)
+        };
+
+        opcode write_data =
+        {
+                .code = data_address,
+                .size = sizeof(u_int64_t)
+        };
+
+        WriteCommand (dst_code, mov_r13_imm);
+        WriteCommand (dst_code, write_data);
+
+}
+
+inline void TranslateSaveRsp (assembly_code* const dst_code)
+{
+        constexpr opcode mov_r15_rsp =
+        {
+                .code = MOV_R15_RSP,
+                .size = OPSIZE(MOV_R15_RSP)
+        };
+
+        WriteCommand (dst_code, mov_r15_rsp);
+        constexpr u_int64_t qword_size = 0x08;
+
+        constexpr opcode rsp_sub_code =
+        {
+                .code = SUB_RSP_IMM | (qword_size << BYTE(3)),
+                .size = OPSIZE(SUB_RSP_IMM)
+        };
+
+        WriteCommand (dst_code, rsp_sub_code);
+}
+
+#define PUSH_HANDLER                                                    \
+        PUSHRAM:                                                        \
+        TranslatePushRAM (dst_buffer, (u_int64_t)code[iter_count + 1]); \
+        iter_count++;                                                   \
+        break;                                                          \
+        case PUSHREG:                                                   \
+        TranslatePushREG (dst_buffer, code[iter_count + 1]);            \
+        iter_count++;                                                   \
+        break;                                                          \
+        case PUSH:                                                      \
+        TranslatePush (dst_buffer, *(u_int64_t*)&code[iter_count + 1]); \
+        iter_count++;                                                   \
+        break
+
+#define POP_HANDLER                                                     \
+        POP:                                                            \
+        TranslatePop (dst_buffer);                                      \
+        break;                                                          \
+        case POPREG:                                                    \
+        TranslatePopREG (dst_buffer, code[iter_count + 1]);             \
+        iter_count++;                                                   \
+        break;                                                          \
+        case POPRAM:                                                    \
+        TranslatePopRAM(dst_buffer, (u_int64_t)code[iter_count + 1]);   \
+        iter_count++;                                                   \
+        break
+
+
+#define CALL_JUMP_HANDLER                                               \
+        CALL:                                                           \
+        case JB:                                                        \
+        case JE:                                                        \
+        case JA:                                                        \
+        case JMP:                                                       \
+        JmpCallHandler (dst_buffer, &table, code[iter_count + 1],       \
+                        iter_count, code[iter_count]);                  \
+        iter_count++;                                                   \
+        break
+
+#define ARITHMETIC_OPERATIONS                                           \
+        ADD:                                                            \
+        case DIV:                                                       \
+        case MUL:                                                       \
+        case SUB:                                                       \
+        TranslateArithmeticOp (dst_buffer, code[iter_count]);           \
+        break;                                                          \
+        case SQRT:                                                      \
+        TranslateSqrt (dst_buffer);                                     \
+        break
+
+
+
+#define STDIO_HANDLER                                                   \
+        IN:                                                             \
+        TranslateIn (dst_buffer);                                       \
+        break;                                                          \
+        case OUT:                                                       \
+        TranslateOut (dst_buffer);                                      \
+        break
+
+#define RET_HLT_HANLDER                                                 \
+        RET:                                                            \
+        TranslateRet (dst_buffer);                                      \
+        break;                                                          \
+        case HLT:                                                       \
+        TranslateHlt (dst_buffer);                                      \
+        break
+
+#define LABEL_SET                                                       \
+        search_res = LabelTableSearchByLabel (&table, iter_count);      \
+                                                                        \
+        if (search_res != NOT_FOUND)                                    \
+                LinkLabel (dst_buffer,                                  \
+                           &table,                                      \
+                           search_res,                                  \
+                           iter_count)
+
+void LinkLabel (assembly_code* const dst_code, label_table* const table, const int search_idx, const int label_pos)
+{
+        for (int iter_count = 0; iter_count < table->elems[search_idx].size; iter_count++)
+        {
+                if (label_pos == LABEL_POS(iter_count))
+                {
+                        if (JMP_POS(iter_count) >= LABEL_POS(iter_count))
+                                CODE_POS(iter_count) = dst_code->position;
+                        else
+                                TranslateRel32Label (dst_code, CODE_POS(iter_count));
+                }
+        }
+}
+
+void TranslationStart (const char* const src_file_name, assembly_code* const dst_buffer, const int time_flag)
+{
+        auto start = std::chrono::high_resolution_clock::now(); // засекаем время
+
+        assembly_code src_code = {};
+        LoadBinaryCode (src_file_name, &src_code);
+        int* code = (int*)src_code.code;
+        AssemblyCodeAlignedInit (dst_buffer, PAGESIZE, MIN_DST_CODE_SIZE);
+
+        size_t op_count = src_code.size / sizeof(int);
+        dst_buffer->code += 2 * PAGESIZE;
+        SetDataSegment   (dst_buffer);
+        TranslateSaveRsp (dst_buffer);
+
+        label_table table = {};
+        LabelTableInit (&table);
+        MakeLabelTable (&src_code, &table);
+
+        int search_res = 0;
+
+        for (size_t iter_count = 0; iter_count < op_count; iter_count++)
+        {
+                LABEL_SET;
+                switch (code[iter_count])
+                {
+                case RET_HLT_HANLDER;
+                case CALL_JUMP_HANDLER;
+
+                case POP_HANDLER; // поменять весь pop
+                case PUSH_HANDLER;
+
+                case ARITHMETIC_OPERATIONS;
+
+                case STDIO_HANDLER;
+                }
+        }
+
+        TranslateLoadRsp (dst_buffer);
+        *dst_buffer->code = (char)RET_OP_CODE;
+        dst_buffer->code -= dst_buffer->position;
+        // обнуляем позицию на первую команду
+
+        if (time_flag)
+        {
+                auto stop     = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+
+                printf("Translation time: %ld ms\n", duration.count());
+        }
+}
+
+void MakeLabelTable (assembly_code* const src_code, label_table* const table)
+{                       // тоже все перепроверить
+        size_t op_count = src_code->size / sizeof(int);
+        int*       code = (int*)src_code->code;
+
+        for (size_t iter_count = 0; iter_count < op_count; iter_count++)
+        {
+                switch (code[iter_count])
+                {
                 case PUSH:
-                case PUSHREG:
-                case PUSHRAM:
-                case PUSHRAMREG:
-                case POPRAM:
-                case POPRAMREG:
                         iter_count += 2;
                         break;
                 case CALL:
@@ -728,17 +1113,15 @@ void MakeLabelTable (assembly_code* const src_code, label_table*  const table) /
                 case JE:
                 case JA:
                 case JMP:
-                        label_table_add(table, code[iter_count + 1], iter_count);
-                        iter_count++;
-                        // Thinking...
-                        break;
-                case PUSHR:
-                case POPR:
-                case PUSHM:
-                case POPM:
+                        LabelTableAdd (table, code[iter_count + 1], iter_count);
                         iter_count++;
                         break;
-
+                case PUSHREG:
+                case POPREG:
+                case PUSHRAM:
+                case POPRAM:
+                        iter_count += 2;                                                // проверить
+                        break;
                 case RET:
                 case OUT:
                 case POP:
@@ -746,8 +1129,8 @@ void MakeLabelTable (assembly_code* const src_code, label_table*  const table) /
                 case DIV:
                 case MUL:
                 case SUB:
-                        break; // Nothing to do (will be optimized out by compiler)
-            }
+                        iter_count++;
+                        break;
+                }
         }
-
 }

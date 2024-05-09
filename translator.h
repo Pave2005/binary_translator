@@ -1,23 +1,27 @@
 #include <stdint.h>
 
+#define PAGESIZE            4096
+#define TRANSLATE_PUSH_SIZE 23
+#define MIN_DST_CODE_SIZE   2 << 14
+
 #define BYTE(val) val * 8
 #define OPSIZE(op_code_name) SIZEOF_##op_code_name
-#define SPACE(num)                          \
-asmcode sep =                               \
-{                                           \
-        .code = (char*)calloc (num, 1);     \
-        .size = num;                        \
-};                                          \
-for (int i = 0; i < num, i++)               \
-        memcpy (sep->code + i, "\n", 1);    \
-WriteAsmCommand (dst_code, sep)
+#define SPACE(num)                                  \
+        asmcode sep =                               \
+        {                                           \
+                .code = (char*)calloc (num, 1);     \
+                .size = num;                        \
+        };                                          \
+        for (int i = 0; i < num, i++)               \
+                memcpy (sep->code + i, "\n", 1);    \
+        WriteAsmCommand (dst_code, sep)
 
 #define INIT_ASM_ELEM(name)                         \
-asmcode name =                                      \
-{                                                   \
-        .code = (char*)calloc (32, sizeof (char));  \
-        .size = 0;                                  \
-}
+        asmcode name =                                      \
+        {                                                   \
+                .code = (char*)calloc (32, sizeof (char));  \
+                .size = 0;                                  \
+        }
 
 const max_ir_node_size = 200;
 const max_ir_bin_trans_size = 100;
@@ -73,6 +77,13 @@ enum REGISTER_CODES
     DX = 13,
 };
 
+enum VCMPPD_COMPARISONS_CODE : u_int64_t
+{
+    EQUAL = 0,
+    LESS = 17,
+    GREATER = 30,
+};
+
 enum X86_ASSEMBLY_OPCODES : u_int64_t
 {
     RAX = 0,
@@ -105,6 +116,13 @@ enum X86_ASSEMBLY_OPCODES : u_int64_t
     MOV_RSP_R15             = 0xFC894C,
     MOV_RDI_RSP             = 0xE78948,
     LEA_RDI_RSP_16          = 0x10247C8D48,
+    JMP_REL32               = 0x00000000E9,
+    VCMPPD_XMM5_XMM0_XMM5   = 0x00EDC2F9C5,
+    MOVMSKPD_R14D_XMM5      = 0xF5500F4466,
+    CMP_R14D_1              = 0x01FE8341,
+    CMP_R14D_3              = 0x03FE8341,
+    MOV_R13                 = 0xBD49,
+    MOV_R15_RSP             = 0xE78949,
 }
 
 struct labels
@@ -140,15 +158,15 @@ union cvt_u_int64_t_int
 
 extern "C" int float_printf            (float* value);
 extern "C" int float_scanf             (float* value);
-int AsseblyCodeInit                    (assembly_code* const self, const size_t bytes);
-int LoadBinaryCode                     (const char* const src_file_name, assembly_code* const src_code_save);
+int         AsseblyCodeInit            (assembly_code* const self, const size_t bytes);
+int         LoadBinaryCode             (const char* const src_file_name, assembly_code* const src_code_save);
 inline void WriteCommand               (assembly_code* const dst_code, opcode operation_code);
 inline void WriteAsmCommand            (assembly_code* const dst_code, asmcode assembler_code);
 inline void TranslatePushToAsm         (assembly_code* const dst_code, const u_int64_t data);
 inline void TranslatePush              (assembly_code* const dst_code, const u_int64_t data);
 inline void TranslatePushRAMToAsm      (assembly_code* const dst_code, const u_int64_t memory_indx);
 inline void TranslatePushRAM           (assembly_code* const dst_code, const u_int64_t memory_indx);
-u_int64_t cvt_host_reg_id_to_native    (const int host_reg_id, const u_int64_t suffix, const u_int64_t offset);
+u_int64_t   cvt_host_reg_id_to_native  (const int host_reg_id, const u_int64_t suffix, const u_int64_t offset);
 inline void TranslatePushREGToAsm      (assembly_code* const dst_code, const u_int64_t reg_id);
 inline void TranslatePushREG           (assembly_code* const dst_code, const u_int64_t reg_id);
 inline void TranslatePopRAMToAsm       (assembly_code* const dst_code, const u_int64_t memory_indx);
