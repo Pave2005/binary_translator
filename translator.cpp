@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "translator.h"
+#include "label_table.h"
 
 extern "C" int float_printf(float* value)
 {
@@ -342,27 +343,27 @@ inline void TranslatePopREG (assembly_code* const dst_code, const int reg_id)  /
         WriteCommand (dst_code, rsp_sub_code);
 }
 
-inline void TranslatePopToAsm (assembly_code* const dst_code)
-{
-        INIT_ASM_ELEM(rsp_sub_code);
-        strcpy (rsp_sub_code->code, "add rsp, 8\n");
-        rsp_sub_code->size = strlen (rsp_sub_code->code);
-
-        WriteAsmCommand (dst_code, rsp_sub_code);
-
-        SPACE(1);
-}
-
-inline void TranslatePop (assembly_code* const dst_code)
-{    // не верно так как у меня поп это изначально в регистр
-        constexpr opcode rsp_sub_code =
-        {
-                .code = ADD_RSP_IMM | (XMMWORD << BYTE(3)),  // проверить xmm
-                .size = OPSIZE(ADD_RSP_IMM)
-        };
-
-        WriteCommand (dst_code, rsp_sub_code);
-}
+// inline void TranslatePopToAsm (assembly_code* const dst_code)
+// {
+//         INIT_ASM_ELEM(rsp_sub_code);
+//         strcpy (rsp_sub_code->code, "add rsp, 8\n");
+//         rsp_sub_code->size = strlen (rsp_sub_code->code);
+//
+//         WriteAsmCommand (dst_code, rsp_sub_code);
+//
+//         SPACE(1);
+// }
+//
+// inline void TranslatePop (assembly_code* const dst_code)
+// {    // не верно так как у меня поп это изначально в регистр
+//         constexpr opcode rsp_sub_code =
+//         {
+//                 .code = ADD_RSP_IMM | (XMMWORD << BYTE(3)),  // проверить xmm
+//                 .size = OPSIZE(ADD_RSP_IMM)
+//         };
+//
+//         WriteCommand (dst_code, rsp_sub_code);
+// }
 
 inline void TranslateArithmeticOpToAsm (assembly_code* const dst_code, const int op_id)
 {
@@ -660,14 +661,14 @@ inline void TranslateOutToAsm (assembly_code* const dst_code)
         call_printf->size = strlen (call_printf->code);
 
         INIT_ASM_ELEM(pop_all_regs);
-        strcpy (pop_all_regs->code, "vmovq xmm4, qword [rsp+8]
-                                     add rsp, 8
-                                     vmovq xmm4, qword [rsp+8]
-                                     add rsp, 8
-                                     vmovq xmm4, qword [rsp+8]
-                                     add rsp, 8
-                                     vmovq xmm4, qword [rsp+8]
-                                     add rsp, 8");
+        strcpy (pop_all_regs->code, "vmovq xmm4, qword [rsp+8]\n
+                                     add rsp, 8\n
+                                     vmovq xmm4, qword [rsp+8]\n
+                                     add rsp, 8\n
+                                     vmovq xmm4, qword [rsp+8]\n
+                                     add rsp, 8\n
+                                     vmovq xmm4, qword [rsp+8]\n
+                                     add rsp, 8\n");
         pop_all_regs->size = strlen (pop_all_regs->code);
 
         WriteAsmCommand (dst_code, lea_rdi_addr);
@@ -725,6 +726,116 @@ inline void TranslateOut (assembly_code* const dst_code)
         WriteCommand (dst_code, cmp);                                                  \
         jmp.code = JE_REL32;                                                           \
         jmp.size = OPSIZE(JE_REL32);
+
+#define TRANS_JMP(name, ...)                                                           \
+        INIT_ASM_ELEM(translate_call);                                                 \
+        sprintf (name->code, __VA_ARGS__);                                             \
+        name->size = strlen (name->code);                                              \
+                                                                                       \
+        WriteAsmCommand (dst_code, name);                                              \
+                                                                                       \
+        SPACE(1)
+
+
+inline void TranslateJmpCallToAsm (assembly_code* const dst_code, const int jmp_type, int* code)
+{ // передаем адрес на котором стоит команда
+        switch (jmp_type)
+        {
+        case CALL:
+        {
+                TRANS_JMP(translate_call, "call L%d\n",                         *(code + 1));
+                break;
+        }
+        case JMP:
+        {
+                TRANS_JMP(translate_call, "jmp L%d\n",                          *(code + 1));
+                break;
+        }
+        case JB:
+        {
+                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n
+                                           vmovq xmm5, qword [rsp+16]\n
+                                           add rsp, 16\n\n
+                                           vcmppd xmm5, xmm0, xmm5, 0x11\n
+                                           movmskpd r14d, xmm5\n
+                                           cmp r14d, 0x1\n
+                                           je L%d\n",                           *(code + 1));
+                break;
+        }
+        case JA:
+        {
+                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n
+                                           vmovq xmm5, qword [rsp+16]\n
+                                           add rsp, 16\n\n
+                                           vcmppd xmm5, xmm0, xmm5, 0x1E\n
+                                           movmskpd r14d, xmm5\n
+                                           cmp r14d, 0x1\n
+                                           je L%d\n",                           *(code + 1));
+                break;
+        }
+        case JE:
+        {
+                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n
+                                           vmovq xmm5, qword [rsp+16]\n
+                                           add rsp, 16\n\n
+                                           vcmppd xmm5, xmm0, xmm5, 0x0\n
+                                           movmskpd r14d, xmm5\n
+                                           cmp r14d, 0x3\n
+                                           je L%d\n",                           *(code + 1));
+                break;
+        }
+        case JNE:
+        {
+                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n
+                                           vmovq xmm5, qword [rsp+16]\n
+                                           add rsp, 16\n\n
+                                           vcmppd xmm5, xmm0, xmm5, 0x0\n
+                                           movmskpd r14d, xmm5\n
+                                           cmp r14d, 0x3\n
+                                           jne L%d\n",                          *(code + 1));
+                break;
+        }
+        case JAE:
+        {
+                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n
+                                           vmovq xmm5, qword [rsp+16]\n
+                                           vmovq xmm4, xmm5\n
+                                           add rsp, 16\n\n
+                                           vcmppd xmm5, xmm0, xmm5, 0x0\n
+                                           movmskpd r14d, xmm5\n
+                                           cmp r14d, 0x3\n
+                                           je L%d\n
+                                           vcmppd xmm4, xmm0, xmm4, 0x1E\n
+                                           xor r14d, r14d\n
+                                           movmskpd r14d, xmm4\n
+                                           cmp r14d, 0x1\n
+                                           je L%d\n",                           *(code + 1), *(code + 1));
+                break;
+        }
+        case JBE:
+        {
+                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n
+                                           vmovq xmm5, qword [rsp+16]\n
+                                           vmovq xmm4, xmm5\n
+                                           add rsp, 16\n\n
+                                           vcmppd xmm5, xmm0, xmm5, 0x0\n
+                                           movmskpd r14d, xmm5\n
+                                           cmp r14d, 0x3\n
+                                           je L%d\n
+                                           vcmppd xmm4, xmm0, xmm4, 0x11\n
+                                           xor r14d, r14d\n
+                                           movmskpd r14d, xmm4\n
+                                           cmp r14d, 0x1\n
+                                           je L%d\n",                           *(code + 1), *(code + 1));
+                break;
+        }
+        }
+}
+
+inline void SetLabel ()
+{
+
+}
 
 void TranslateRel32Label (assembly_code* const dst_code, const size_t jmp_pos)
 {
@@ -788,6 +899,7 @@ opcode TranslateJmpCall (assembly_code* const dst_code, const int jmp_call_code)
         case CALL:
         {
                 TranslatePush (dst_code, (u_int64_t)dst_code->code + TRANSLATE_PUSH_SIZE);
+                __attribute__((fallthrough));
         }
         case JMP:
         {
@@ -828,93 +940,80 @@ inline void TranslateTwoPopForCmp (assembly_code* const dst_code, const int jmp_
         }
 }
 
-inline void TranslateAheadJmpCall (assembly_code* const dst_code,   // зависит от таблицы меток
-                                   abel_table*    const table,
+inline void TranslateAheadJmpCall (assembly_code* const dst_code,
+                                   label_table*   const table,
                                    const int            label_pos,
                                    const int            jmp_call_pos,
                                    const int            jmp_call_code)
-{ // доделать часть с таблицей
+{
         TranslateTwoPopForCmp (dst_code, jmp_call_code);
 
         opcode jmp = TranslateJmpCall (dst_code, jmp_call_code);
 
-        size_t* code_pos_ptr = get_code_pos_ptr_by_jmp(table, label_pos, jmp_call_pos);
-        // дописать либу с таблицей меток
+        size_t* code_pos_ptr = GetCodePosPtrByJmp (table, label_pos, jmp_call_pos);
         *code_pos_ptr        = dst_code->position;
 
         WriteCommand (dst_code, jmp);
-
 }
 
-inline void JmpCallHandler (assembly_code* const __restrict dst_code,         // нужно таблицу написать
-                            label_table*   const __restrict table,
-                            const int                       label_pos,
-                            const int                       jmp_n_call_pos,
-                            const int                       jmp_n_call_code)
-{  // не смотрел
-        // For case when label is before jump
-        if (label_pos <= jmp_call_pos) {
-                translate_cycle(dst_code,
+inline void JmpCallHandler (assembly_code* const dst_code,
+                            label_table*   const table,
+                            const int      label_pos,
+                            const int      jmp_call_pos,
+                            const int      jmp_call_code)
+{
+        if (label_pos <= jmp_call_pos)
+        {
+                TranslateCycle (dst_code,
                                 table,
                                 label_pos,
-                                jmp_n_call_pos,
-                                jmp_n_call_code);
+                                jmp_call_pos,
+                                jmp_call_code);
         }
         else
         {
-                translate_ahead_jmp_n_call(dst_code,
-                                           table,
-                                           label_pos,
-                                           jmp_n_call_pos,
-                                           jmp_n_call_code);
+                TranslateAheadJmpCall (dst_code,
+                                       table,
+                                       label_pos,
+                                       jmp_call_pos,
+                                       jmp_call_code);
         }
-                        // For case label after jump
-
-
 }
 
-inline void TranslateCycle (assembly_code* const dst_code,      // нужно таблицу написать
+inline void TranslateCycle (assembly_code* const dst_code,
                             label_table*   const table,
                             const int            label_pos,
                             const int            jmp_call_pos,
                             const int            jmp_call_code)
 
-{ // не смотрел
+{  // понять позже
         TranslateTwoPopForCmp (dst_code, jmp_call_code);
 
-        size_t code_pos = get_code_pos_by_jmp (table,
-                                               label_pos,
-                                               jmp_n_call_pos);
+        size_t code_pos = GetCodePosByJmp (table, label_pos, jmp_call_pos);
 
         cvt_u_int64_t_int convert = {};
 
-        opcode jmp = translate_jmp_n_call(dst_code, jmp_n_call_code);
+        opcode jmp = TranslateJmpCall (dst_code, jmp_call_code);
 
-        // Call is treated as a jump with saving the return address in the stack
-        switch(jmp_n_call_code) {
+        switch(jmp_call_code)
+        {
         case CALL:
-                translate_push(dst_code,
-                               (u_int64_t)dst_code->code + TRANSLATE_PUSH_SIZE);
+                TranslatePush (dst_code, (u_int64_t)dst_code->code + TRANSLATE_PUSH_SIZE);
                 __attribute__((fallthrough));
-
         case JMP:
-                // Save rel address
-                convert = { .rel_addr =
-                            code_pos - dst_code->position - OPSIZE(JMP_REL32)};
+                convert = { .rel_addr = code_pos - dst_code->position - OPSIZE(JMP_REL32)};
                 jmp.code |= convert.extended_address << BYTE(1);
                 break;
-       default:
+        default:
                 convert = { .rel_addr = code_pos - dst_code->position - OPSIZE(JE_REL32)};
                 jmp.code |= convert.extended_address << BYTE(2);
         }
 
-        write_command(dst_code, jmp);
+        WriteCommand (dst_code, jmp);
 }
 
-inline void SetDataSegment (assembly_code* const dst_code)
+inline void SetDataSegment (assembly_code* const dst_code)  // положили в первые ячейки сегмент памяти
 {
-        // положили в первые ячейки сегмент памяти
-
         const u_int64_t data_address = (u_int64_t)(dst_code->code - 2 * PAGESIZE);
 
         constexpr opcode mov_r13_imm =
@@ -970,9 +1069,6 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
 
 #define POP_HANDLER                                                     \
         POP:                                                            \
-        TranslatePop (dst_buffer);                                      \
-        break;                                                          \
-        case POPREG:                                                    \
         TranslatePopREG (dst_buffer, code[iter_count + 1]);             \
         iter_count++;                                                   \
         break;                                                          \
@@ -980,7 +1076,6 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         TranslatePopRAM(dst_buffer, (u_int64_t)code[iter_count + 1]);   \
         iter_count++;                                                   \
         break
-
 
 #define CALL_JUMP_HANDLER                                               \
         CALL:                                                           \
@@ -1003,8 +1098,6 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         case SQRT:                                                      \
         TranslateSqrt (dst_buffer);                                     \
         break
-
-
 
 #define STDIO_HANDLER                                                   \
         IN:                                                             \
@@ -1045,6 +1138,24 @@ void LinkLabel (assembly_code* const dst_code, label_table* const table, const i
         }
 }
 
+void SetLabel (assembly_code* const dst_code, int label_pos)
+{
+        INIT_ASM_ELEM(label);
+        sprintf (label->code, "L%d:\n", label_pos);
+        label->size = strlen (label->code);
+
+        WriteAsmCommand (dst_code, label);
+}
+
+void CheckNSetLabel (assembly_code* const dst_code, int* jmp_pos, size_t iter_count)
+{
+        for (size_t i = 0; jmp_pos[i] != '\n'; i++)
+        {
+                if (jmp_pos[i] == iter_count)
+                        SetLabel (dst_code, iter_count);
+        }
+}
+
 void TranslationStart (const char* const src_file_name, assembly_code* const dst_buffer, const int time_flag)
 {
         auto start = std::chrono::high_resolution_clock::now(); // засекаем время
@@ -1062,18 +1173,20 @@ void TranslationStart (const char* const src_file_name, assembly_code* const dst
         label_table table = {};
         LabelTableInit (&table);
         MakeLabelTable (&src_code, &table);
+        int* jmp_pos = MakeLabelTableToAsm (code); // преобразовать
 
         int search_res = 0;
 
         for (size_t iter_count = 0; iter_count < op_count; iter_count++)
         {
+                CheckNSetLabel (dst_buffer, jmp_pos, iter_count);
                 LABEL_SET;
                 switch (code[iter_count])
                 {
                 case RET_HLT_HANLDER;
                 case CALL_JUMP_HANDLER;
 
-                case POP_HANDLER; // поменять весь pop
+                case POP_HANDLER;
                 case PUSH_HANDLER;
 
                 case ARITHMETIC_OPERATIONS;
@@ -1096,8 +1209,56 @@ void TranslationStart (const char* const src_file_name, assembly_code* const dst
         }
 }
 
+int* MakeLabelTableToAsm (assembly_code* const src_code) // объединить со стандартным
+{
+        size_t op_count = src_code->size / sizeof(int);
+        int*       code = (int*)src_code->code;
+        int*    jmp_pos = (int*)calloc (MIN_LABEL_TABLE_SIZE, sizeof (int));
+        int*    jmp_pos_start = jmp_pos;
+
+        for (size_t iter_count = 0; iter_count < op_count; iter_count++)
+        {
+                switch (code[iter_count])
+                {
+                case PUSH:
+                        iter_count ++;
+                        break;
+                case CALL:
+                case JB:
+                case JE:
+                case JA:
+                case JAE:
+                case JBE:
+                case JNE:
+                case JMP:
+                        iter_count ++;
+                        *jmp_pos = code[iter_count];
+                        jmp_pos ++;
+                        break;
+                case POP:
+                case PUSHREG:
+                case POPREG:
+                case PUSHRAM:
+                case POPRAM:
+                        iter_count ++;
+                        break;
+                case HLT:
+                case RET:
+                case OUT:
+                case ADD:
+                case DIV:
+                case MUL:
+                case SUB:
+                case SQRT:
+                case IN:
+                        break;
+                }
+        }
+        return jmp_pos_start;
+}
+
 void MakeLabelTable (assembly_code* const src_code, label_table* const table)
-{                       // тоже все перепроверить
+{// не проверено нормально, пока заняться другим
         size_t op_count = src_code->size / sizeof(int);
         int*       code = (int*)src_code->code;
 
@@ -1106,31 +1267,110 @@ void MakeLabelTable (assembly_code* const src_code, label_table* const table)
                 switch (code[iter_count])
                 {
                 case PUSH:
-                        iter_count += 2;
+                        iter_count ++;   // проверить при тестировании
                         break;
                 case CALL:
                 case JB:
                 case JE:
                 case JA:
+                case JAE:
+                case JBE:
+                case JNE:
                 case JMP:
                         LabelTableAdd (table, code[iter_count + 1], iter_count);
                         iter_count++;
                         break;
+                case POP:
                 case PUSHREG:
                 case POPREG:
                 case PUSHRAM:
                 case POPRAM:
-                        iter_count += 2;                                                // проверить
+                        iter_count ++; // проверить
                         break;
+                case HLT:
                 case RET:
                 case OUT:
-                case POP:
                 case ADD:
                 case DIV:
                 case MUL:
                 case SUB:
+                case SQRT:
+                case IN:
                         iter_count++;
                         break;
                 }
+        }
+}
+
+void Handler (int argc, char* argv[])
+{
+        int option_mask     = 0;
+        int file_name_index = 0;
+
+        for (int iter_count = 1; iter_count < argc; iter_count++)
+        {
+                if (*argv[iter_count] == '-')
+                        OptionDetecting (argv[iter_count], &option_mask);
+                else
+                {
+                        if (file_name_index != 0) {
+                                printf(RED "Fatal error: " END
+                                           "You cannot translate more "
+                                           "than one file\n");
+                                return;
+                        }
+
+                        file_name_index = iter_count;
+                }
+        }
+
+        if (file_name_index == 0)
+        {
+                printf(RED "Fatal error: " END
+                           "expected file name\n");
+                return;
+        }
+
+        OptionHandling (option_mask, argv[file_name_index]);
+}
+
+inline void OptionDetecting (const char* const option, int* const option_mask)
+{
+        if (strcmp(option, "--non-native") == 0)
+                SET_BIT(NON_NATIVE);
+        else if (strcmp(option, "--time") == 0)
+                SET_BIT(TIME);
+        else
+                printf(BLUE "Warning:" END
+                            "Unrecognizable option %s "
+                            "was ignored.  Type --help "
+                            "to show all options\n", option);
+}
+
+void  OptionHandling (int option_mask, const char* const file_name)
+{
+        if (GET_BIT(NON_NATIVE))
+                ExecuteEmulator(file_name, GET_BIT(TIME));
+        else
+        {
+                assembly_code execute = {};
+                TranslationStart (file_name, &execute, GET_BIT(TIME));
+                ExecuteStart (execute.code, GET_BIT(TIME));
+        }
+}
+
+void ExecuteStart (char* const execution_buffer, const int time_flag)
+{
+        auto start = std::chrono::high_resolution_clock::now();
+
+        void (*ExecutionAddress)(void) = (void (*)(void))(execution_buffer);
+        ExecutionAddress();
+
+        if (time_flag)
+        {
+                auto stop     = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds> (stop - start);
+
+                printf("Execution time: %ld ms\n", duration.count());
         }
 }

@@ -50,7 +50,7 @@ inline void LabelTableAdd (label_table* const self, const int label, const int j
 
 inline int LabelTableSearchByLabel (label_table* const self, const int label_pos)
 {
-        int idx = _mm_crc32_u32(label_pos, 0xDED) % MIN_LABEL_TABLE_SIZE;
+        int idx = _mm_crc32_u32 (label_pos, 0xDED) % MIN_LABEL_TABLE_SIZE;
         if (STACK[idx].size == 0)
                 return NOT_FOUND;
         return idx;  // возвращаем индекс подмножества

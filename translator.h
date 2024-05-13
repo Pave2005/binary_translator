@@ -19,10 +19,10 @@
 #define INIT_ASM_ELEM(name)                         \
         asmcode name =                                      \
         {                                                   \
-                .code = (char*)calloc (32, sizeof (char));  \
+                .code = (char*)calloc (200, sizeof (char));  \
                 .size = 0;                                  \
         }
-
+// нужно очищать фрагмент памяти
 const max_ir_node_size = 200;
 const max_ir_bin_trans_size = 100;
 
@@ -42,26 +42,25 @@ enum REG_MASK : u_int64_t
 
 enum ISA
 {
-    HLT = -1, //!
-    PUSH = 1, //!
-    DIV = 2, //!
-    SUB = 3, //!
-    OUT = 4, //!
-    ADD = 5, //!
-    MUL = 6, //!
-    SQRT = 7, //!
-    IN = 8,   //!
-    POP = 9, // !
+    HLT = -1,
+    PUSH = 1,
+    DIV = 2,
+    SUB = 3,
+    OUT = 4,
+    ADD = 5,
+    MUL = 6,
+    SQRT = 7,
+    IN = 8,
+    POP = 9,
     JMP = 14,
-    LB = 15,
     JB = 16,
-    PUSHRAM = 17,       // положить в память                                // !
-    POPRAM = 18,        // забрать из памяти                                // !
+    PUSHRAM = 17,
+    POPRAM = 18,
     CALL = 19,
-    RET = 20, //!
-    PUSHREG = 21, //!
-    PUSHRAMREG = 22,    // положить в память по индексу из регистра         // !
-    POPRAMREG = 23, //!
+    RET = 20,
+    PUSHREG = 21,
+    PUSHRAMREG = 22,
+    POPRAMREG = 23,
     JA = 24,
     JAE = 25,
     JBE = 26,
@@ -188,3 +187,6 @@ inline void TranslateInToAsm           (assembly_code* const dst_code);
 inline void TranslateIn                (assembly_code* const dst_code);
 inline void TranslateOutToAsm          (assembly_code* const dst_code);
 inline void TranslateOut               (assembly_code* const dst_code);
+int*        MakeLabelTableToAsm        (assembly_code* const src_code); // переделать
+void        CheckNSetLabel             (assembly_code* const dst_code, int* jmp_pos, size_t iter_count);
+void        SetLabel                   (assembly_code* const dst_code, int label_pos);
