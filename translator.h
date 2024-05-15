@@ -1,4 +1,12 @@
+#ifndef TRANS
+#define TRANS
+
 #include <stdint.h>
+#include <cstdint>
+
+#include "label_table.h"
+
+typedef uint64_t u_int64_t;
 
 #define PAGESIZE            4096
 #define TRANSLATE_PUSH_SIZE 23
@@ -9,22 +17,22 @@
 #define SPACE(num)                                  \
         asmcode sep =                               \
         {                                           \
-                .code = (char*)calloc (num, 1);     \
-                .size = num;                        \
+                .code = (char*)calloc (num, 1),     \
+                .size = num                         \
         };                                          \
-        for (int i = 0; i < num, i++)               \
-                memcpy (sep->code + i, "\n", 1);    \
+        for (int i = 0; i < num; i++)               \
+                memcpy (sep.code + i, "\n", 1);     \
         WriteAsmCommand (dst_code, sep)
 
-#define INIT_ASM_ELEM(name)                         \
+#define INIT_ASM_ELEM(name)                                 \
         asmcode name =                                      \
         {                                                   \
-                .code = (char*)calloc (200, sizeof (char));  \
-                .size = 0;                                  \
-        }
+                .code = (char*)calloc (200, sizeof (char)), \
+                .size = 0                                   \
+        };
 // нужно очищать фрагмент памяти
-const max_ir_node_size = 200;
-const max_ir_bin_trans_size = 100;
+const int max_ir_node_size = 200;
+const int max_ir_bin_trans_size = 100;
 
 enum WORD_SIZE : u_int64_t
 {
@@ -107,6 +115,8 @@ enum X86_ASSEMBLY_OPCODES : u_int64_t
     ADD_RSP_IMM             = 0x00C48348,
     VMOVQ_XMM_RSP_IMM       = 0x0024007EFAC5,
     VMOVQ_R13_D_IMM_XMM5    = 0xADD679C1C4,
+    VMOVQ_R13_B_IMM_XMM5    = 0x006DD679C1C4,
+    VMOVQ_RSP_IMM_XMM       = 0x002400D6F9C5,
     ADDSD_XMM_RSP_IMM       = 0x002400580FF2,
     SUBSD_XMM_RSP_IMM       = 0x0024005C0FF2,
     MULSD_XMM_RSP_IMM       = 0x002400590FF2,
@@ -116,13 +126,45 @@ enum X86_ASSEMBLY_OPCODES : u_int64_t
     MOV_RDI_RSP             = 0xE78948,
     LEA_RDI_RSP_16          = 0x10247C8D48,
     JMP_REL32               = 0x00000000E9,
+    JE_REL32                = 0x00000000840F,
     VCMPPD_XMM5_XMM0_XMM5   = 0x00EDC2F9C5,
     MOVMSKPD_R14D_XMM5      = 0xF5500F4466,
     CMP_R14D_1              = 0x01FE8341,
     CMP_R14D_3              = 0x03FE8341,
     MOV_R13                 = 0xBD49,
     MOV_R15_RSP             = 0xE78949,
-}
+};
+
+enum X86_ASSEMBLY_OPCODES_SIZE
+{
+    SIZEOF_VMOVQ_RSP_XMM         = 5,
+    SIZEOF_VMOVQ_RSP_IMM_XMM     = 6,
+    SIZEOF_SUB_RSP_IMM           = 4,
+    SIZEOF_ADD_RSP_IMM           = 4,
+    SIZEOF_ADDSD_XMM_RSP_IMM     = 6,
+    SIZEOF_MOV_R15_RSP           = 3,
+    SIZEOF_MOV_RSP_R15           = 3,
+    SIZEOF_CALL_OP_CODE          = 5,
+    SIZEOF_MOV_R14               = 2,
+    SIZEOF_MOV_TO_STACK_R14      = 4,
+    SIZEOF_VMOVQ_XMM_RSP_IMM     = 6,
+    SIZEOF_VMOVQ_XMM5_R13_B_IMM  = 6,
+    SIZEOF_VMOVQ_XMM5_R13_D_IMM  = 5,
+    SIZEOF_MOV_R13               = 2,
+    SIZEOF_JMP_REL32             = 5,
+    SIZEOF_JE_REL32              = 6,
+    SIZEOF_VCMPPD_XMM5_XMM0_XMM5 = 5,
+    SIZEOF_MOVMSKPD_R14D_XMM5    = 5,
+    SIZEOF_CMP_R14D_1            = 4,
+    SIZEOF_CMP_R14D_3            = 4,
+    SIZEOF_MOV_RDI_RSP           = 3,
+    SIZEOF_MOV_EDI_0             = 5,
+    SIZEOF_VSQRTPD_XMM0_XMM0     = 4,
+    SIZEOF_LEA_RDI_RSP_16        = 5,
+    SIZEOF_VMOVQ_R13_B_IMM_XMM5  = 6,
+    SIZEOF_VMOVQ_R13_D_IMM_XMM5  = 5,
+    SIZEOF_RET                   = 1
+};
 
 struct labels
 {
@@ -151,7 +193,7 @@ struct opcode
 
 union cvt_u_int64_t_int
 {
-    int       rel_addr;
+    size_t       rel_addr;
     u_int64_t extended_address;
 };
 
@@ -188,5 +230,26 @@ inline void TranslateIn                (assembly_code* const dst_code);
 inline void TranslateOutToAsm          (assembly_code* const dst_code);
 inline void TranslateOut               (assembly_code* const dst_code);
 int*        MakeLabelTableToAsm        (assembly_code* const src_code); // переделать
+void        MakeLabelTable             (assembly_code* const src_code, label_table* const table);
 void        CheckNSetLabel             (assembly_code* const dst_code, int* jmp_pos, size_t iter_count);
 void        SetLabel                   (assembly_code* const dst_code, int label_pos);
+void        ExecuteStart               (char* const execution_buffer, const int time_flag);
+void        OptionHandling             (int option_mask, const char* const file_name);
+inline void OptionDetecting            (const char* const option, int* const option_mask);
+void        Handler                    (int argc, char* argv[]);
+void        TranslationStart           (const char* const src_file_name, assembly_code* const dst_buffer, const int mode);
+void        LinkLabel                  (assembly_code* const dst_code, label_table* const table, const int search_idx, const int label_pos);
+inline void TranslateSaveRsp           (assembly_code* const dst_code);
+inline void SetDataSegment             (assembly_code* const dst_code);
+inline void TranslateCycle             (assembly_code* const dst_code, label_table* const table, const int label_pos,
+                                        const int        jmp_call_pos, const int  jmp_call_code);
+inline void JmpCallHandler             (assembly_code* const dst_code, label_table* const table, const int label_pos,
+                                        const int        jmp_call_pos, const int  jmp_call_code);
+inline void TranslateAheadJmpCall      (assembly_code* const dst_code, label_table* const table, const int label_pos,
+                                        const int        jmp_call_pos, const int  jmp_call_code);
+inline void TranslateTwoPopForCmp      (assembly_code* const dst_code, const int  jmp_call_code);
+opcode      TranslateJmpCall           (assembly_code* const dst_code, const int  jmp_call_code);
+void        TranslateRel32Label        (assembly_code* const dst_code, const size_t jmp_pos);
+inline void TranslateJmpCallToAsm      (assembly_code* const dst_code, const int jmp_type, int* code);
+
+#endif

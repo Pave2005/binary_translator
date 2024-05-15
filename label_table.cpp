@@ -1,5 +1,10 @@
 #include "label_table.h"
 
+#define STACK self->elems
+
+#define CODE_POS(count)  STACK[idx].data[count].code_pos
+#define JMP_POS(count)   STACK[idx].data[count].jmp
+
 void StackInit (stack* const stack, const size_t size)
 {
         stack->data     = (stack_node*)calloc (size, sizeof (stack_node));
