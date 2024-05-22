@@ -35,7 +35,7 @@ int AsseblyCodeInit (assembly_code* const self, const size_t bytes)
         return 0;
 }
 
-int LoadBinaryCode (const char* const src_file_name, assembly_code* const src_code_save)
+int LoadBinaryCode (const char* const src_file_name, assembly_code* src_code_save)
 {
         FILE* src_file = fopen (src_file_name, "rb");
 
@@ -43,7 +43,9 @@ int LoadBinaryCode (const char* const src_file_name, assembly_code* const src_co
         int file_size = ftell (src_file);
         fseek (src_file, 0, SEEK_SET);
 
+        src_code_save->code = (char*)calloc (file_size, sizeof (char));
         fread (src_code_save->code, sizeof (char), file_size, src_file);
+        src_code_save->size = file_size;
 
         fclose (src_file);
 
@@ -61,21 +63,44 @@ inline void WriteAsmCommand (assembly_code* const dst_code, asmcode assembler_co
 {
         memcpy (dst_code->code, assembler_code.code, assembler_code.size);
         dst_code->position += assembler_code.size;
+        dst_code->size     += assembler_code.size;
         dst_code->code     += assembler_code.size;
 }
 
-inline void TranslatePushToAsm (assembly_code* const dst_code, const u_int64_t data)
+inline void WriteHeader (assembly_code* const dst_code)
 {
-        INIT_ASM_ELEM(mov_r14_imm); // поменять на константу и спросить у криса так ли это делать
-        sprintf (mov_r14_imm.code, "movabs r14, %lu\n", data);
-        mov_r14_imm.size = strlen (mov_r14_imm.code);
+        INIT_ASM_ELEM(header);
+        strcpy (header.code, "extern scanf\nextern printf\n\nsection .data\n\nscanf_str db \"%lf\", 0\nprintf_str db \"%lf\", 10, 0\n\nsection .text\n\nglobal main\n\nmain:\nmov rbp, rsp\nsub rsp, 8  ; выравнивание на 16\n\n");
+        header.size = strlen (header.code);
+
+        WriteAsmCommand (dst_code, header);
+}
+
+inline void WriteEnd (assembly_code* const dst_code)
+{
+        INIT_ASM_ELEM(end);
+        strcpy (end.code, "\nEND:\n");
+        end.size = strlen (end.code);
+
+        WriteAsmCommand (dst_code, end);
+}
+
+inline void TranslatePushToAsm (assembly_code* const dst_code, const float data)
+{
+        INIT_ASM_ELEM(mov_rax_float);
+        sprintf (mov_rax_float.code, "mov rax, __float64__(%f)  ; push imm\n", data);
+        mov_rax_float.size = strlen (mov_rax_float.code);
+
+        INIT_ASM_ELEM(mov_to_stack);
+        strcpy (mov_to_stack.code, "vmovq xmm5, rax\nvmovq qword [rsp - 16], xmm5\n");
+        mov_to_stack.size = strlen (mov_to_stack.code);
 
         INIT_ASM_ELEM(mov_and_redata);
-        strcpy (mov_and_redata.code, "mov qword [rsp], r14\n \
-                                       sub rsp, 8\n");
-        mov_and_redata.size = sizeof (mov_and_redata.code);
+        strcpy (mov_and_redata.code, "sub rsp, 16\nxor rax, rax\n");
+        mov_and_redata.size = strlen (mov_and_redata.code);
 
-        WriteAsmCommand (dst_code, mov_r14_imm);
+        WriteAsmCommand (dst_code, mov_rax_float);
+        WriteAsmCommand (dst_code, mov_to_stack);
         WriteAsmCommand (dst_code, mov_and_redata);
 
         SPACE(1);
@@ -118,7 +143,7 @@ inline void TranslatePush (assembly_code* const dst_code, const u_int64_t data)
 inline void TranslatePushRAMToAsm (assembly_code* const dst_code, const u_int64_t memory_indx)
 {
         INIT_ASM_ELEM(mov_xmm5_mem);
-        sprintf (mov_xmm5_mem.code, "vmovq xmm5, qword [r13 + 8 * %d]\n", (int)memory_indx);
+        sprintf (mov_xmm5_mem.code, "vmovq xmm5, qword [r13 + 8 * %d]  ;push [idx]\n", (int)memory_indx);
         mov_xmm5_mem.size = strlen (mov_xmm5_mem.code);
 
         INIT_ASM_ELEM(push_to_stack);
@@ -193,16 +218,18 @@ u_int64_t cvt_host_reg_id_to_native (const int host_reg_id, const u_int64_t suff
         case RDX:
                 return XMM4 << offset | suffix;
         }
+        return 0;
 }
 
 inline void TranslatePushREGToAsm (assembly_code* const dst_code, const u_int64_t reg_id)
 {
         INIT_ASM_ELEM(mov_to_stack); // поменять на константу и спросить у криса так ли это делать
-        sprintf (mov_to_stack.code, "movq qword [rsp], xmm%d\n", (int)(reg_id - AX)); // проверить соответствие регистров
+        sprintf (mov_to_stack.code, "movq qword [rsp - 16], xmm%d  ; push reg\n", (int)(reg_id - AX)); // проверить соответствие регистров
         mov_to_stack.size = strlen (mov_to_stack.code);
 
         INIT_ASM_ELEM(sub_rsp);
-        sprintf (sub_rsp.code, "sub rsp, 8\n");
+        sprintf (sub_rsp.code, "sub rsp, 16\n");
+        sub_rsp.size = strlen (sub_rsp.code);
 
         WriteAsmCommand (dst_code, mov_to_stack);
         WriteAsmCommand (dst_code, sub_rsp);
@@ -235,9 +262,9 @@ inline void TranslatePushREG (assembly_code* const dst_code, const u_int64_t reg
 }
 
 inline void TranslatePopRAMToAsm (assembly_code* const dst_code, const u_int64_t memory_indx)
-{ // разобрать случай с большими индексами памяти, проверить выполняется ли
+{
         INIT_ASM_ELEM(mov_to_xmm5);
-        strcpy (mov_to_xmm5.code, "vmovq xmm5, qword [rsp + 8]\n");
+        strcpy (mov_to_xmm5.code, "vmovq xmm5, qword [rsp + 8]  ; pop [idx]\n");
         mov_to_xmm5.size = strlen (mov_to_xmm5.code);
 
         INIT_ASM_ELEM(pop_ram);
@@ -300,11 +327,11 @@ inline void TranslatePopRAM (assembly_code* const dst_code, const u_int64_t memo
 inline void TranslatePopREGToAsm (assembly_code* const dst_code, const int reg_id)
 {
         INIT_ASM_ELEM(mov_xmm_stack);
-        sprintf (mov_xmm_stack.code, "vmovq xmm%d, qword [rsp + 8]\n", (int)(reg_id - AX));// проверить соответствие регистров
+        sprintf (mov_xmm_stack.code, "vmovq xmm%d, qword [rsp]  ; pop reg\n", (int)(reg_id - AX));// проверить соответствие регистров
         mov_xmm_stack.size = strlen (mov_xmm_stack.code);
 
         INIT_ASM_ELEM(add_rsp);
-        strcpy (add_rsp.code, "add rsp, 8\n");
+        strcpy (add_rsp.code, "add rsp, 16\n");
         add_rsp.size = strlen (add_rsp.code);
 
         WriteAsmCommand (dst_code, mov_xmm_stack);
@@ -314,7 +341,7 @@ inline void TranslatePopREGToAsm (assembly_code* const dst_code, const int reg_i
 }
 
 inline void TranslatePopREG (assembly_code* const dst_code, const int reg_id)  // проверить все и протестировать
-{  // как pop
+{
         constexpr u_int64_t suffix = 0x44; // 0x44 = 01000100b watch explanation of opcodes higher
         constexpr u_int64_t offset = 3;
 
@@ -362,7 +389,7 @@ inline void TranslatePopREG (assembly_code* const dst_code, const int reg_id)  /
 inline void TranslateArithmeticOpToAsm (assembly_code* const dst_code, const int op_id)
 {
         INIT_ASM_ELEM(mov_xmm5_stack);
-        strcpy (mov_xmm5_stack.code, "vmovq xmm5, qword [rsp+8]\n");
+        strcpy (mov_xmm5_stack.code, "vmovq xmm5, qword [rsp + 16]  ; arithmetic\n");
         mov_xmm5_stack.size = strlen (mov_xmm5_stack.code);
 
         char operation_code[6] = {}; // заменить на константу
@@ -384,15 +411,20 @@ inline void TranslateArithmeticOpToAsm (assembly_code* const dst_code, const int
         }
 
         INIT_ASM_ELEM(arithm_op);
-        sprintf (arithm_op.code, "%s xmm5, qword [rsp+16]\n", operation_code);
+        sprintf (arithm_op.code, "%s xmm5, qword [rsp]\n", operation_code);
         arithm_op.size = strlen (arithm_op.code);
 
+        INIT_ASM_ELEM(push_val);
+        strcpy (push_val.code, "movq qword [rsp + 16], xmm5\n");
+        push_val.size = strlen (push_val.code);
+
         INIT_ASM_ELEM(add_rsp);
-        strcpy (add_rsp.code, "add rsp, 8\n");
+        strcpy (add_rsp.code, "add rsp, 16\n");
         add_rsp.size = strlen (add_rsp.code);
 
         WriteAsmCommand (dst_code, mov_xmm5_stack);
         WriteAsmCommand (dst_code, arithm_op);
+        WriteAsmCommand (dst_code, push_val);
         WriteAsmCommand (dst_code, add_rsp);
 
         SPACE(1);
@@ -446,15 +478,15 @@ inline void TranslateArithmeticOp (assembly_code* const dst_code, const int op_i
 inline void TranslateSqrtToAsm (assembly_code* const dst_code)
 {
         INIT_ASM_ELEM(mov_xmm0_stack);
-        strcpy (mov_xmm0_stack.code, "vmovq xmm0, qword [rsp+8]\n");
+        strcpy (mov_xmm0_stack.code, "vmovq xmm4, qword [rsp]  ; sqrt\n");
         mov_xmm0_stack.size = strlen (mov_xmm0_stack.code);
 
         INIT_ASM_ELEM(sqrt_xmm0);
-        strcpy (sqrt_xmm0.code, "vsqrtpd xmm0, xmm0\n");
+        strcpy (sqrt_xmm0.code, "vsqrtpd xmm4, xmm4\n");
         sqrt_xmm0.size = strlen (sqrt_xmm0.code);
 
         INIT_ASM_ELEM(push_xmm0);
-        strcpy (push_xmm0.code, "vmovq [rsp+8], xmm0\n");
+        strcpy (push_xmm0.code, "vmovq qword [rsp], xmm4\n");
         push_xmm0.size = strlen (push_xmm0.code);
 
         WriteAsmCommand (dst_code, mov_xmm0_stack);
@@ -493,15 +525,15 @@ inline void TranslateSqrt (assembly_code* const dst_code)
 
 inline void TranslateRetToAsm (assembly_code* const dst_code)
 {
-        INIT_ASM_ELEM(alignment);
-        strcpy (alignment.code, "add rsp, 8\n");
-        alignment.size = strlen (alignment.code);
+        // INIT_ASM_ELEM(alignment);
+        // strcpy (alignment.code, "add rsp, 8  ; ret\n");
+        // alignment.size = strlen (alignment.code);
 
         INIT_ASM_ELEM(ret);
         strcpy (ret.code, "ret\n");
         ret.size = strlen (ret.code);
 
-        WriteAsmCommand (dst_code, alignment);
+        // WriteAsmCommand (dst_code, alignment);
         WriteAsmCommand (dst_code, ret);
 
         SPACE(1);
@@ -535,11 +567,11 @@ inline void TranslateLoadRsp (assembly_code* const dst_code)
 inline void TranslateHltToAsm (assembly_code* const dst_code)
 {
         INIT_ASM_ELEM(init_rsp);
-        strcpy (init_rsp.code, "mov rsp, rbp\n");
+        strcpy (init_rsp.code, "mov rsp, rbp  ; hlt\n");
         init_rsp.size = strlen (init_rsp.code);
 
         INIT_ASM_ELEM(ret);
-        strcpy (ret.code, "ret\n");
+        strcpy (ret.code, "jmp END\n");
         ret.size = strlen (ret.code);
 
         WriteAsmCommand (dst_code, init_rsp);
@@ -557,22 +589,27 @@ inline void TranslateHlt (assembly_code* const dst_code)
 }
 
 inline void TranslateInToAsm (assembly_code* const dst_code)
-{       // проверить куд возвращвется, по факту в stack
+{
+        INIT_ASM_ELEM(mov_rdi_str);                             // аргумент функции
+        strcpy (mov_rdi_str.code, "lea rdi, scanf_str  ; in\n");
+        mov_rdi_str.size = strlen (mov_rdi_str.code);
+
+        INIT_ASM_ELEM(sub_rsp);                             // аргумент функции
+        strcpy (sub_rsp.code, "sub rsp, 16\n");
+        sub_rsp.size = strlen (sub_rsp.code);
+
         INIT_ASM_ELEM(mov_rdi_rsi);                             // аргумент функции
-        strcpy (mov_rdi_rsi.code, "mov rdi, rsp\n");
+        strcpy (mov_rdi_rsi.code, "mov rsi, rsp\n");
         mov_rdi_rsi.size = strlen (mov_rdi_rsi.code);
 
         INIT_ASM_ELEM(call_scanf);
-        strcpy (call_scanf.code, "call float_scanf\n");        // функция из C
+        strcpy (call_scanf.code, "call scanf\n");        // функция из C
         call_scanf.size = strlen (call_scanf.code);
 
-        INIT_ASM_ELEM(sub_rsp);                             // аргумент функции
-        strcpy (sub_rsp.code, "sub rsp, 8\n");
-        sub_rsp.size = strlen (sub_rsp.code);
-
+        WriteAsmCommand (dst_code, mov_rdi_str);
+        WriteAsmCommand (dst_code, sub_rsp);
         WriteAsmCommand (dst_code, mov_rdi_rsi);
         WriteAsmCommand (dst_code, call_scanf);
-        WriteAsmCommand (dst_code, sub_rsp);
 
         SPACE(1);
 }
@@ -635,40 +672,56 @@ while (0)
 
 inline void TranslateOutToAsm (assembly_code* const dst_code)
 {
-        INIT_ASM_ELEM(lea_rdi_addr);                            // аргумент для функции
-        strcpy (lea_rdi_addr.code, "lea rdi, [rsp + 8]\n");
-        lea_rdi_addr.size = strlen (lea_rdi_addr.code);
+        INIT_ASM_ELEM(mov_rdi_str);                             // аргумент функции
+        strcpy (mov_rdi_str.code, "lea rdi, printf_str  ; out\n");
+        mov_rdi_str.size = strlen (mov_rdi_str.code);
+
+        INIT_ASM_ELEM(xmm_count);                            // аргумент для функции
+        strcpy (xmm_count.code, "mov rax, 1\n");
+        xmm_count.size = strlen (xmm_count.code);
+
+        INIT_ASM_ELEM(save_xmm0);                            // аргумент для функции
+        strcpy (save_xmm0.code, "vmovq qword [rsp - 8], xmm0\nsub rsp, 8\n");
+        save_xmm0.size = strlen (save_xmm0.code);
+
+        INIT_ASM_ELEM(mov_xmm0_val);                            // аргумент для функции
+        strcpy (mov_xmm0_val.code, "movq xmm0, qword [rsp + 8]\n");
+        mov_xmm0_val.size = strlen (mov_xmm0_val.code);
 
         INIT_ASM_ELEM(push_all_regs);
-        strcpy (push_all_regs.code,  "vmovq qword [rsp], xmm1\n \
-                                      sub rsp, 8\n              \
-                                      vmovq qword [rsp], xmm2\n \
-                                      sub rsp, 8\n              \
-                                      vmovq qword [rsp], xmm3\n \
-                                      sub rsp, 8\n              \
-                                      vmovq qword [rsp], xmm4\n \
-                                      sub rsp, 8\n");
+        strcpy (push_all_regs.code,  "vmovq qword [rsp - 8], xmm1\nsub rsp, 8\nvmovq qword [rsp - 8], xmm2\nsub rsp, 8\nvmovq qword [rsp - 8], xmm3\nsub rsp, 8\nvmovq qword [rsp - 8], xmm4\nsub rsp, 8\n\n");
         push_all_regs.size = strlen (push_all_regs.code);
 
+        INIT_ASM_ELEM(aligned_sub_8);
+        strcpy (aligned_sub_8.code, "sub rsp, 8\n");      // функция из C
+        aligned_sub_8.size = strlen (aligned_sub_8.code);
+
         INIT_ASM_ELEM(call_printf);
-        strcpy (call_printf.code, "call float_printf\n");      // функция из C
+        strcpy (call_printf.code, "call printf\n");      // функция из C
         call_printf.size = strlen (call_printf.code);
 
+        INIT_ASM_ELEM(aligned_add_8);
+        strcpy (aligned_add_8.code, "add rsp, 8\n");      // функция из C
+        aligned_add_8.size = strlen (aligned_add_8.code);
+
+        INIT_ASM_ELEM(aligned_rsp);
+        strcpy (aligned_rsp.code, "add rsp, 16\n");      // функция из C
+        aligned_rsp.size = strlen (aligned_rsp.code);
+
         INIT_ASM_ELEM(pop_all_regs);
-        strcpy (pop_all_regs.code, "vmovq xmm4, qword [rsp+8]\n\
-                                     add rsp, 8\n\
-                                     vmovq xmm4, qword [rsp+8]\n\
-                                     add rsp, 8\n\
-                                     vmovq xmm4, qword [rsp+8]\n\
-                                     add rsp, 8\n\
-                                     vmovq xmm4, qword [rsp+8]\n\
-                                     add rsp, 8\n");
+        strcpy (pop_all_regs.code, "\nvmovq xmm4, qword [rsp]\nadd rsp, 8\nvmovq xmm3, qword [rsp]\nadd rsp, 8\nvmovq xmm2, qword [rsp]\nadd rsp, 8\nvmovq xmm1, qword [rsp]\nadd rsp, 8\nvmovq xmm0, qword [rsp]\nadd rsp, 8\n");
         pop_all_regs.size = strlen (pop_all_regs.code);
 
-        WriteAsmCommand (dst_code, lea_rdi_addr);
+        WriteAsmCommand (dst_code, mov_rdi_str);
+        WriteAsmCommand (dst_code, xmm_count);
+        WriteAsmCommand (dst_code, save_xmm0);
+        WriteAsmCommand (dst_code, mov_xmm0_val);
         WriteAsmCommand (dst_code, push_all_regs);
+        WriteAsmCommand (dst_code, aligned_sub_8);
         WriteAsmCommand (dst_code, call_printf);
+        WriteAsmCommand (dst_code, aligned_add_8);
         WriteAsmCommand (dst_code, pop_all_regs);
+        WriteAsmCommand (dst_code, aligned_rsp);
 
         SPACE(1);
 }
@@ -692,7 +745,7 @@ inline void TranslateOut (assembly_code* const dst_code)
 
         cvt_u_int64_t_int convert =
         {
-                .rel_addr = rel_address
+                .rel_addr = (size_t)rel_address
         };
 
         opcode call_out =
@@ -737,90 +790,90 @@ inline void TranslateJmpCallToAsm (assembly_code* const dst_code, const int jmp_
         {
         case CALL:
         {
-                TRANS_JMP(translate_call, "call L%d\n",                         *(code + 1));
+                TRANS_JMP(translate_call, "sub rsp, 8\ncall L%g  ; call\nadd rsp, 8\n", *((float*)(code + 1)));
                 break;
         }
         case JMP:
         {
-                TRANS_JMP(translate_call, "jmp L%d\n",                          *(code + 1));
+                TRANS_JMP(translate_call, "jmp L%g  ; jmp\n",  *(float*)(code + 1));
                 break;
         }
         case JB:
         {
-                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n\
-                                           vmovq xmm5, qword [rsp+16]\n\
-                                           add rsp, 16\n\n\
-                                           vcmppd xmm5, xmm0, xmm5, 0x11\n\
-                                           movmskpd r14d, xmm5\n\
-                                           cmp r14d, 0x1\n\
-                                           je L%d\n",                           *(code + 1));
+                TRANS_JMP(translate_call,  "vmovq xmm4, qword [rsp]  ; jb\n"
+                                           "vmovq xmm5, qword [rsp + 16]\n"
+                                           "add rsp, 32\n\n"
+                                           "vcmppd xmm5, xmm4, xmm5, 0x11\n"
+                                           "movmskpd r14d, xmm5\n"
+                                           "cmp r14d, 0x1\n"
+                                           "je L%g\n",                           *(float*)(code + 1));
                 break;
         }
         case JA:
         {
-                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n\
-                                           vmovq xmm5, qword [rsp+16]\n\
-                                           add rsp, 16\n\n\
-                                           vcmppd xmm5, xmm0, xmm5, 0x1E\n\
-                                           movmskpd r14d, xmm5\n\
-                                           cmp r14d, 0x1\n\
-                                           je L%d\n",                           *(code + 1));
+                TRANS_JMP(translate_call, "vmovq xmm4, qword [rsp]  ; ja\n"
+                                           "vmovq xmm5, qword [rsp + 16]\n"
+                                           "add rsp, 32\n\n"
+                                           "vcmppd xmm5, xmm4, xmm5, 0x1E\n"
+                                           "movmskpd r14d, xmm5\n"
+                                           "cmp r14d, 0x1\n"
+                                           "je L%g\n",                           *(float*)(code + 1));
                 break;
         }
         case JE:
         {
-                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n\
-                                           vmovq xmm5, qword [rsp+16]\n\
-                                           add rsp, 16\n\n\
-                                           vcmppd xmm5, xmm0, xmm5, 0x0\n\
-                                           movmskpd r14d, xmm5\n\
-                                           cmp r14d, 0x3\n\
-                                           je L%d\n",                           *(code + 1));
+                TRANS_JMP(translate_call, "vmovq xmm4, qword [rsp]  ; je\n"
+                                           "vmovq xmm5, qword [rsp + 16]\n"
+                                           "add rsp, 32\n\n"
+                                           "vcmppd xmm5, xmm4, xmm5, 0x0\n"
+                                           "movmskpd r14d, xmm5\n"
+                                           "cmp r14d, 0x3\n"
+                                           "je L%g\n",                           *(float*)(code + 1));
                 break;
         }
         case JNE:
         {
-                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n\
-                                           vmovq xmm5, qword [rsp+16]\n\
-                                           add rsp, 16\n\n\
-                                           vcmppd xmm5, xmm0, xmm5, 0x0\n\
-                                           movmskpd r14d, xmm5\n\
-                                           cmp r14d, 0x3\n\
-                                           jne L%d\n",                          *(code + 1));
+                TRANS_JMP(translate_call, "vmovq xmm4, qword [rsp]  ; jne\n"
+                                           "vmovq xmm5, qword [rsp + 16]\n"
+                                           "add rsp, 32\n\n"
+                                           "vcmppd xmm5, xmm4, xmm5, 0x0\n"
+                                           "movmskpd r14d, xmm5\n"
+                                           "cmp r14d, 0x3\n"
+                                           "jne L%g\n",                          *(float*)(code + 1));
                 break;
         }
         case JAE:
         {
-                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n\
-                                           vmovq xmm5, qword [rsp+16]\n\
-                                           vmovq xmm4, xmm5\n\
-                                           add rsp, 16\n\n\
-                                           vcmppd xmm5, xmm0, xmm5, 0x0\n\
-                                           movmskpd r14d, xmm5\n\
-                                           cmp r14d, 0x3\n\
-                                           je L%d\n\
-                                           vcmppd xmm4, xmm0, xmm4, 0x1E\n\
-                                           xor r14d, r14d\n\
-                                           movmskpd r14d, xmm4\n\
-                                           cmp r14d, 0x1\n\
-                                           je L%d\n",                           *(code + 1), *(code + 1));
+                TRANS_JMP(translate_call, "vmovq xmm4, qword [rsp]  ; jae\n"
+                                           "vmovq xmm5, qword [rsp + 16]\n"
+                                           "vmovq xmm4, xmm5\n"
+                                           "add rsp, 32\n\n"
+                                           "vcmppd xmm5, xmm4, xmm5, 0x0\n"
+                                           "movmskpd r14d, xmm5\n"
+                                           "cmp r14d, 0x3\n"
+                                           "je L%g\n"
+                                           "vcmppd xmm4, xmm4, xmm4, 0x1E\n"
+                                           "xor r14d, r14d\n"
+                                           "movmskpd r14d, xmm4\n"
+                                           "cmp r14d, 0x1\n"
+                                           "je L%g\n",                           *(float*)(code + 1), *(float*)(code + 1));
                 break;
         }
         case JBE:
         {
-                TRANS_JMP(translate_call, "vmovq xmm0, qword [rsp+8]\n\
-                                           vmovq xmm5, qword [rsp+16]\n\
-                                           vmovq xmm4, xmm5\n\
-                                           add rsp, 16\n\n\
-                                           vcmppd xmm5, xmm0, xmm5, 0x0\n\
-                                           movmskpd r14d, xmm5\n\
-                                           cmp r14d, 0x3\n\
-                                           je L%d\n\
-                                           vcmppd xmm4, xmm0, xmm4, 0x11\n\
-                                           xor r14d, r14d\n\
-                                           movmskpd r14d, xmm4\n\
-                                           cmp r14d, 0x1\n\
-                                           je L%d\n",                           *(code + 1), *(code + 1));
+                TRANS_JMP(translate_call, "vmovq xmm4, qword [rsp]  ; jbe\n"
+                                           "vmovq xmm5, qword [rsp + 16]\n"
+                                           "vmovq xmm4, xmm5\n"
+                                           "add rsp, 32\n\n"
+                                           "vcmppd xmm5, xmm4, xmm5, 0x0\n"
+                                           "movmskpd r14d, xmm5\n"
+                                           "cmp r14d, 0x3\n"
+                                           "je L%g\n"
+                                           "vcmppd xmm4, xmm4, xmm4, 0x11\n"
+                                           "xor r14d, r14d\n"
+                                           "movmskpd r14d, xmm4\n"
+                                           "cmp r14d, 0x1\n"
+                                           "je L%g\n",                           *(float*)(code + 1), *(float*)(code + 1));
                 break;
         }
         }
@@ -1047,7 +1100,7 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslatePushRAM (dst_buffer, (u_int64_t)code[iter_count + 1]);                         \
         if (mode)                                                                               \
-                TranslatePushRAMToAsm (dst_buffer, (u_int64_t)code[iter_count + 1]);            \
+                TranslatePushRAMToAsm (asm_dst_buffer, (u_int64_t)code[iter_count + 1]);            \
         iter_count++;                                                                           \
         break;                                                                                  \
         }                                                                                       \
@@ -1055,7 +1108,7 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslatePushREG (dst_buffer, (u_int64_t)code[iter_count + 1]);                         \
         if (mode)                                                                               \
-                TranslatePushREGToAsm (dst_buffer, (u_int64_t)code[iter_count + 1]);            \
+                TranslatePushREGToAsm (asm_dst_buffer, (u_int64_t)code[iter_count + 1]);            \
         iter_count++;                                                                           \
         break;                                                                                  \
         }                                                                                       \
@@ -1063,7 +1116,7 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslatePush (dst_buffer, *(u_int64_t*)&code[iter_count + 1]);                         \
         if (mode)                                                                               \
-                TranslatePushToAsm (dst_buffer, *(u_int64_t*)&code[iter_count + 1]);            \
+                TranslatePushToAsm (asm_dst_buffer, code[iter_count + 1]);            \
         iter_count++;                                                                           \
         break;                                                                                  \
         }
@@ -1073,7 +1126,7 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslatePopREG (dst_buffer, code[iter_count + 1]);                                     \
         if (mode)                                                                               \
-                TranslatePopREGToAsm (dst_buffer, code[iter_count + 1]);                        \
+                TranslatePopREGToAsm (asm_dst_buffer, code[iter_count + 1]);                        \
         iter_count++;                                                                           \
         break;                                                                                  \
         }                                                                                       \
@@ -1081,7 +1134,7 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslatePopRAM (dst_buffer, (u_int64_t)code[iter_count + 1]);                          \
         if (mode)                                                                               \
-                TranslatePopREGToAsm (dst_buffer, (u_int64_t)code[iter_count + 1]);             \
+                TranslatePopREGToAsm (asm_dst_buffer, (u_int64_t)code[iter_count + 1]);             \
         iter_count++;                                                                           \
         break;                                                                                  \
         }
@@ -1096,7 +1149,7 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         JmpCallHandler (dst_buffer, &table, code[iter_count + 1],                               \
                         iter_count, code[iter_count]);                                          \
         if (mode)                                                                               \
-                TranslateJmpCallToAsm (dst_buffer, code[iter_count], &(code[iter_count]));      \
+                TranslateJmpCallToAsm (asm_dst_buffer, code[iter_count], (int*)(&(code[iter_count])));      \
         iter_count++;                                                                           \
         break;                                                                                  \
         }
@@ -1109,14 +1162,14 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslateArithmeticOp (dst_buffer, code[iter_count]);                                   \
         if (mode)                                                                               \
-                TranslateArithmeticOpToAsm (dst_buffer, code[iter_count]);                      \
+                TranslateArithmeticOpToAsm (asm_dst_buffer, code[iter_count]);                      \
         break;                                                                                  \
         }                                                                                       \
         case SQRT:                                                                              \
         {                                                                                       \
         TranslateSqrt (dst_buffer);                                                             \
         if (mode)                                                                               \
-                TranslateSqrtToAsm (dst_buffer);                                                \
+                TranslateSqrtToAsm (asm_dst_buffer);                                                \
         break;                                                                                  \
         }
 
@@ -1125,14 +1178,14 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslateIn (dst_buffer);                                                               \
         if (mode)                                                                               \
-                TranslateInToAsm (dst_buffer);                                                  \
+                TranslateInToAsm (asm_dst_buffer);                                                  \
         break;                                                                                  \
         }                                                                                       \
         case OUT:                                                                               \
         {                                                                                       \
         TranslateOut (dst_buffer);                                                              \
         if (mode)                                                                               \
-                TranslateOutToAsm (dst_buffer);                                                 \
+                TranslateOutToAsm (asm_dst_buffer);                                                 \
         break;                                                                                  \
         }
 
@@ -1141,14 +1194,14 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         {                                                                                       \
         TranslateRet (dst_buffer);                                                              \
         if (mode)                                                                               \
-                TranslateRetToAsm (dst_buffer);                                                 \
+                TranslateRetToAsm (asm_dst_buffer);                                                 \
         break;                                                                                  \
         }                                                                                       \
         case HLT:                                                                               \
         {                                                                                       \
         TranslateHlt (dst_buffer);                                                              \
         if (mode)                                                                               \
-                TranslateHltToAsm (dst_buffer);                                                 \
+                TranslateHltToAsm (asm_dst_buffer);                                                 \
         break;                                                                                  \
         }
 
@@ -1179,55 +1232,62 @@ void LinkLabel (assembly_code* const dst_code, label_table* const table, const i
         }
 }
 
-inline void SetLabel (assembly_code* const dst_code, int label_pos)
+inline void SetLabel (assembly_code* const dst_code, const int label_pos)
 {
         INIT_ASM_ELEM(label);
         sprintf (label.code, "L%d:\n", label_pos);
         label.size = strlen (label.code);
-
         WriteAsmCommand (dst_code, label);
 }
 
-void CheckNSetLabel (assembly_code* const dst_code, int* jmp_pos, size_t iter_count)
+void CheckNSetLabel (assembly_code* const dst_code, int* jmp_pos, const size_t iter_count) // не рассмотрен частный случай где метка равна 0
 {
-        for (size_t i = 0; jmp_pos[i] != '\n'; i++)
+        for (size_t i = 0; jmp_pos[i] != 0; i++)
         {
                 if (jmp_pos[i] == iter_count)
+                {
                         SetLabel (dst_code, iter_count);
+                }
         }
 }
 
-void TranslationStart (const char* const src_file_name, assembly_code* const dst_buffer, const int mode)
-{// пока все в один буфер идет и флаг -S формально не работает
-        // auto start = std::chrono::high_resolution_clock::now(); // засекаем время
-
+void TranslationStart (const char* const src_file_name, assembly_code* const dst_buffer, assembly_code* const asm_dst_buffer, const int mode)
+{
         assembly_code src_code = {};
         LoadBinaryCode (src_file_name, &src_code);
-        int* code = (int*)src_code.code;
+        float* code = (float*)src_code.code;
+
+        asm_dst_buffer->code = (char*)calloc (MIN_DST_CODE_SIZE, sizeof (char));
+
         AssemblyCodeAlignedInit (dst_buffer, PAGESIZE, MIN_DST_CODE_SIZE);
 
-        size_t op_count = src_code.size / sizeof(int);
+        size_t op_count = src_code.size / sizeof(float);
         dst_buffer->code += 2 * PAGESIZE;
-        SetDataSegment   (dst_buffer);
+        SetDataSegment   (dst_buffer); // для бинарного кода
         TranslateSaveRsp (dst_buffer);
 
         label_table table = {};
         LabelTableInit (&table);
-        MakeLabelTable (&src_code, &table);
+        MakeLabelTable (&src_code, &table); // для бинарного
 
         int* jmp_pos = nullptr;
         if (mode)
+        {
                 jmp_pos = MakeLabelTableToAsm (&src_code); // преобразовать
+                // for (size_t i = 0; i < MIN_LABEL_TABLE_SIZE; i++)
+                //         printf ("pos = %d\n", jmp_pos[i]);
+        }
 
         int search_res = 0;
 
+        WriteHeader (asm_dst_buffer);
         for (size_t iter_count = 0; iter_count < op_count; iter_count++)
         {
                 if (mode)
-                        CheckNSetLabel (dst_buffer, jmp_pos, iter_count);
+                        CheckNSetLabel (asm_dst_buffer, jmp_pos, iter_count);
                 LABEL_SET;
 
-                switch (code[iter_count])
+                switch ((int)code[iter_count])
                 {
                 case RET_HLT_HANLDER
                 case CALL_JUMP_HANDLER
@@ -1240,31 +1300,35 @@ void TranslationStart (const char* const src_file_name, assembly_code* const dst
                 case STDIO_HANDLER
                 }
         }
+        WriteEnd (asm_dst_buffer);
 
         TranslateLoadRsp (dst_buffer);
         *dst_buffer->code = (char)RET_OP_CODE;
         dst_buffer->code -= dst_buffer->position;
-        // обнуляем позицию на первую команду
 
-//         if (mode)
-//         {
-//                 auto stop     = std::chrono::high_resolution_clock::now();
-//                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-//
-//                 printf("Translation time: %ld ms\n", duration.count());
-//         }
+        asm_dst_buffer->code -= asm_dst_buffer->position;
+        if (mode)
+        {
+                printf ("%s\n", asm_dst_buffer->code);
+        }
+
+        FILE* dst_file = fopen ("dst_code.asm", "w");
+        fwrite (asm_dst_buffer->code, sizeof (char), asm_dst_buffer->size, dst_file);
+        fclose (dst_file);
 }
 
 int* MakeLabelTableToAsm (assembly_code* const src_code) // объединить со стандартным
 {
-        size_t op_count = src_code->size / sizeof(int);
-        int*       code = (int*)src_code->code;
-        int*    jmp_pos = (int*)calloc (MIN_LABEL_TABLE_SIZE, sizeof (int));
-        int*    jmp_pos_start = jmp_pos;
+        size_t    op_count = src_code->size / sizeof(float);
+        float*        code = (float*)src_code->code;
+        int*       jmp_pos = (int*)calloc (MIN_LABEL_TABLE_SIZE, sizeof (int));
+        int* jmp_pos_start = jmp_pos;
 
-        for (size_t iter_count = 0; iter_count < op_count; iter_count++)
+        printf ("op_count = %ld\n", op_count);
+
+        for (int iter_count = 0; iter_count < op_count; iter_count++)
         {
-                switch (code[iter_count])
+                switch ((int)code[iter_count])
                 {
                 case PUSH:
                         iter_count ++;
@@ -1278,7 +1342,7 @@ int* MakeLabelTableToAsm (assembly_code* const src_code) // объединить
                 case JNE:
                 case JMP:
                         iter_count ++;
-                        *jmp_pos = code[iter_count];
+                        *jmp_pos = (int)code[iter_count];
                         jmp_pos ++;
                         break;
                 case POP:
@@ -1305,12 +1369,12 @@ int* MakeLabelTableToAsm (assembly_code* const src_code) // объединить
 
 void MakeLabelTable (assembly_code* const src_code, label_table* const table)
 {// не проверено нормально, пока заняться другим
-        size_t op_count = src_code->size / sizeof(int);
-        int*       code = (int*)src_code->code;
+        size_t op_count = src_code->size / sizeof(float);
+        float*       code = (float*)src_code->code;
 
         for (size_t iter_count = 0; iter_count < op_count; iter_count++)
         {
-                switch (code[iter_count])
+                switch ((int)code[iter_count])
                 {
                 case PUSH:
                         iter_count ++;   // проверить при тестировании
@@ -1404,57 +1468,29 @@ inline void OptionDetecting (const char* const option, int* const option_mask) /
 
 void  OptionHandling (int option_mask, const char* const file_name)
 {
-        // if (GET_BIT(NON_NATIVE))
-                // ExecuteEmulator (file_name, GET_BIT(TIME));
         if (GET_BIT(ASM))
         {
                 assembly_code execute = {};
-                TranslationStart (file_name, &execute, GET_BIT(ASM));
+                assembly_code asm_execute = {};
+                TranslationStart (file_name, &execute, &asm_execute, GET_BIT(ASM));
+                ExecuteStart (execute.code);
         }
         else
         {
                 assembly_code execute = {};
-                TranslationStart (file_name, &execute, GET_BIT(TIME));
-                ExecuteStart (execute.code, GET_BIT(TIME));
+                assembly_code asm_execute = {};
+                TranslationStart (file_name, &execute, &asm_execute, GET_BIT(ASM)); // изменить
+                ExecuteStart (execute.code);
         }
 }
 
-// void execute_emulator(const char* const file_name, const int time_flag)
-// {
-//
-//         auto start = std::chrono::high_resolution_clock::now();
-//
-//         char sys_string[MAX_STR_SIZE] = CPU_BIN_NAME;
-//
-//         strncpy(sys_string + strlen(CPU_BIN_NAME),
-//                 file_name,
-//                 MAX_STR_SIZE - strlen(CPU_BIN_NAME));
-//
-//         system(sys_string);
-//
-//         if (time_flag) {
-//                 auto stop     = std::chrono::high_resolution_clock::now();
-//                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>
-//                                                                       (stop - start);
-//
-//                 printf("Execution time: %ld ms\n",
-//                         duration.count());
-//         }
-//
-// }
-
-void ExecuteStart (char* const execution_buffer, const int time_flag)
+void ExecuteStart (char* const execution_buffer)
 {
-        auto start = std::chrono::high_resolution_clock::now();
-
+        if (mprotect(execution_buffer, MIN_DST_CODE_SIZE, PROT_EXEC) != 0)
+        {
+                printf ("mprotect error\n");
+                return;
+        }
         void (*ExecutionAddress)(void) = (void (*)(void))(execution_buffer);
         ExecutionAddress();
-
-        if (time_flag)
-        {
-                auto stop     = std::chrono::high_resolution_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::milliseconds> (stop - start);
-
-                printf("Execution time: %ld ms\n", duration.count());
-        }
 }

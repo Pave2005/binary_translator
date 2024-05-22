@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <cstdint>
+#include <sys/types.h>
+#include <sys/mman.h>
 
 #include "label_table.h"
 
@@ -27,7 +29,7 @@ typedef uint64_t u_int64_t;
 #define INIT_ASM_ELEM(name)                                 \
         asmcode name =                                      \
         {                                                   \
-                .code = (char*)calloc (200, sizeof (char)), \
+                .code = (char*)calloc (500, sizeof (char)), \
                 .size = 0                                   \
         };
 // нужно очищать фрагмент памяти
@@ -200,7 +202,7 @@ union cvt_u_int64_t_int
 extern "C" int float_printf            (float* value);
 extern "C" int float_scanf             (float* value);
 int         AsseblyCodeInit            (assembly_code* const self, const size_t bytes);
-int         LoadBinaryCode             (const char* const src_file_name, assembly_code* const src_code_save);
+int         LoadBinaryCode             (const char* const src_file_name, assembly_code* src_code_save);
 inline void WriteCommand               (assembly_code* const dst_code, opcode operation_code);
 inline void WriteAsmCommand            (assembly_code* const dst_code, asmcode assembler_code);
 inline void TranslatePushToAsm         (assembly_code* const dst_code, const u_int64_t data);
@@ -231,13 +233,13 @@ inline void TranslateOutToAsm          (assembly_code* const dst_code);
 inline void TranslateOut               (assembly_code* const dst_code);
 int*        MakeLabelTableToAsm        (assembly_code* const src_code); // переделать
 void        MakeLabelTable             (assembly_code* const src_code, label_table* const table);
-void        CheckNSetLabel             (assembly_code* const dst_code, int* jmp_pos, size_t iter_count);
-void        SetLabel                   (assembly_code* const dst_code, int label_pos);
-void        ExecuteStart               (char* const execution_buffer, const int time_flag);
+void        CheckNSetLabel             (assembly_code* const dst_code, int* jmp_pos, const size_t iter_count);
+void        SetLabel                   (assembly_code* const dst_code, const int label_pos);
+void        ExecuteStart               (char* const execution_buffer);
 void        OptionHandling             (int option_mask, const char* const file_name);
 inline void OptionDetecting            (const char* const option, int* const option_mask);
 void        Handler                    (int argc, char* argv[]);
-void        TranslationStart           (const char* const src_file_name, assembly_code* const dst_buffer, const int mode);
+void        TranslationStart           (const char* const src_file_name, assembly_code* const dst_buffer, assembly_code* const asm_dst_buffer, const int mode);
 void        LinkLabel                  (assembly_code* const dst_code, label_table* const table, const int search_idx, const int label_pos);
 inline void TranslateSaveRsp           (assembly_code* const dst_code);
 inline void SetDataSegment             (assembly_code* const dst_code);
@@ -251,5 +253,7 @@ inline void TranslateTwoPopForCmp      (assembly_code* const dst_code, const int
 opcode      TranslateJmpCall           (assembly_code* const dst_code, const int  jmp_call_code);
 void        TranslateRel32Label        (assembly_code* const dst_code, const size_t jmp_pos);
 inline void TranslateJmpCallToAsm      (assembly_code* const dst_code, const int jmp_type, int* code);
+inline void WriteHeader                (assembly_code* const dst_code);
+inline void WriteEnd (assembly_code* const dst_code);
 
 #endif
