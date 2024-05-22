@@ -785,7 +785,7 @@ inline void TranslateOut (assembly_code* const dst_code)
 
 
 inline void TranslateJmpCallToAsm (assembly_code* const dst_code, const int jmp_type, int* code)
-{ // передаем адрес на котором стоит команда
+{
         switch (jmp_type)
         {
         case CALL:
@@ -1145,6 +1145,9 @@ inline void TranslateSaveRsp (assembly_code* const dst_code)
         case JE:                                                                                \
         case JA:                                                                                \
         case JMP:                                                                               \
+        case JNE:                                                                               \
+        case JAE:                                                                               \
+        case JBE:                                                                               \
         {                                                                                       \
         JmpCallHandler (dst_buffer, &table, code[iter_count + 1],                               \
                         iter_count, code[iter_count]);                                          \
@@ -1247,6 +1250,7 @@ void CheckNSetLabel (assembly_code* const dst_code, int* jmp_pos, const size_t i
                 if (jmp_pos[i] == iter_count)
                 {
                         SetLabel (dst_code, iter_count);
+                        break;
                 }
         }
 }
@@ -1473,14 +1477,14 @@ void  OptionHandling (int option_mask, const char* const file_name)
                 assembly_code execute = {};
                 assembly_code asm_execute = {};
                 TranslationStart (file_name, &execute, &asm_execute, GET_BIT(ASM));
-                ExecuteStart (execute.code);
+                //ExecuteStart (execute.code);
         }
         else
         {
                 assembly_code execute = {};
                 assembly_code asm_execute = {};
                 TranslationStart (file_name, &execute, &asm_execute, GET_BIT(ASM)); // изменить
-                ExecuteStart (execute.code);
+                //ExecuteStart (execute.code);
         }
 }
 
